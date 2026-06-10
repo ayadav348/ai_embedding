@@ -113,11 +113,14 @@ graph TD
 ### Data Ingestion Pipeline Flow
 ```mermaid
 graph TD
-    Start([User Drops PDF & Clicks Embed]) --> Extract[Extract Raw Character Streams via PyPDF]
-    Extract --> Condition{Is Text Extracted?}
+    Start([User Drops PDF or Pastes Text & Clicks Compile]) --> SourceType{Input Source?}
     
+    SourceType -- PDF --> Extract[Extract Raw Character Streams via PyPDF]
+    Extract --> Condition{Is Text Extracted?}
     Condition -- No --> Error[Throw UI Error: Blank or Scan File] --> End([Terminate Process])
-    Condition -- Yes --> Chunk[Split Text into 500-Word Windows with Overlap]
+    Condition -- Yes --> Chunk
+
+    SourceType -- Raw Text --> Chunk[Split Text into 500-Word Windows with Overlap]
     
     Chunk --> LoopStart[For Each Individual Chunk]
     LoopStart --> Embed[Request Spatial Coordinates via nomic-embed-text]
