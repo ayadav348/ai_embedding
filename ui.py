@@ -1,134 +1,96 @@
-import streamlit as strl
+import streamlit as st
 import requests
-from pypdf import PdfReader
+import json
 
-BACKEND_API = "http://127.0.0.1:8000"
+# Force layout alignment to maximize terminal widescreen layouts
+st.set_page_config(layout="wide", page_title="Spatial Telemetry Dashboard")
 
-strl.set_page_config(page_title="Aarav Knowledge Interface", layout="wide")
+API_BASE = "http://127.0.0.1:8000"
 
-# Sidebar Tracking Module Control
-strl.sidebar.title("Navigation Hub")
-app_mode = strl.sidebar.radio("Select Processing Interface", ["Document Ingestion Workspace", "Conversational Chat Pipeline"])
+st.title("🛰️ Spatial Telemetry & Scenario Retrieval Engine")
+st.caption("Local 3D Scene Discovery, Volumetric Processing & State Seeding Dashboard")
 
-# --- MODE 1: DOCUMENT INGESTION CONSOLE ---
-if app_mode == "Document Ingestion Workspace":
-    strl.title("🗂 Document Ingestion & Spatial Embedding Console")
-    strl.write("Upload a PDF document or paste raw text to compile context into the local `pgvector` store.")
+# Split our interface workspace down the center into 2 distinct columns
+col1, col2 = st.columns(2)
 
-    # Two-column layout: PDF upload on the left, text input on the right
-    col_pdf, col_text = strl.columns(2)
+with col1:
+    st.header("📥 Ingestion Workspace")
+    st.subheader("Stream Telemetry Configuration Package")
+    
+    # Pre-populate a standard 3D sample frame layout for easy workspace testing
+    sample_payload = {
+        "scene_id": "miata-sequence-042",
+        "frame_timestamp": 12.450,
+        "ego_velocity_vector": [11.2, 0.0, -0.05],
+        "camera_extrinsics_rt": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 1.2],
+            [0.0, 0.0, 1.0, -0.4]
+        ],
+        "detected_objects": [
+            {
+                "target_id": 105,
+                "classification": "car",
+                "center_xyz": [2.5, 14.2, -0.1],
+                "extent_lwh": [4.5, 1.8, 1.4],
+                "velocity_vector": [-8.5, 0.2, 0.0],
+                "occlusion_state": "partial_500ms"
+            },
+            {
+                "target_id": 106,
+                "classification": "pedestrian",
+                "center_xyz": [-1.8, 8.5, -0.2],
+                "extent_lwh": [0.6, 0.6, 1.7],
+                "velocity_vector": [0.0, 1.1, 0.0],
+                "occlusion_state": "none"
+            }
+        ]
+    }
+    
+    json_input = st.text_area(
+        "Structured Spatial JSON Input Contract:",
+        value=json.dumps(sample_payload, indent=2),
+        height=400
+    )
+    
+    if st.button("🚀 Push Telemetry to Database Cluster"):
+        try:
+            parsed_payload = json.loads(json_input)
+            with st.spinner("Executing matrix serialization and pgvector indexing..."):
+                response = requests.post(f"{API_BASE}/ingest/spatial", json=parsed_payload)
+                
+            if response.status_code == 200:
+                res_data = response.json()
+                st.success(f"Successfully indexed sequence: {res_data['scene_indexed']} at timestamp {res_data['frame_timestamp']}s")
+            else:
+                st.error(f"Backend Server Error Flag: {response.text}")
+        except json.JSONDecodeError:
+            st.error("Data Verification Failure: Input block is not a valid JSON string structure.")
+        except Exception as e:
+            st.error(f"Transport Connection Failed: {e}")
 
-    with col_pdf:
-        strl.subheader("Upload PDF Document")
-        uploaded_file = strl.file_uploader("Upload Target PDF Document", type=["pdf"], label_visibility="collapsed")
-        if uploaded_file is not None:
-            strl.success(f"File loaded: {uploaded_file.name}")
-
-    with col_text:
-        strl.subheader("Paste Raw Text")
-        manual_text = strl.text_area(
-            "Paste context text here",
-            height=200,
-            placeholder="Paste textbook passages, notes, or any reference material here...",
-            label_visibility="collapsed"
-        )
-        manual_text_name = strl.text_input(
-            "Label for this text (used as filename in the database)",
-            placeholder="e.g. chapter1_notes",
-            value=""
-        )
-
-    strl.divider()
-
-    if strl.button("Compile & Generate Embeddings", type="primary"):
-        sources_queued = []
-
-        # Collect PDF source
-        if uploaded_file is not None:
-            sources_queued.append(("pdf", uploaded_file))
-
-        # Collect manual text source
-        if manual_text.strip():
-            label = manual_text_name.strip() if manual_text_name.strip() else "manual_text_input"
-            sources_queued.append(("text", (label, manual_text)))
-
-        if not sources_queued:
-            strl.warning("No input provided. Upload a PDF or paste text before compiling.")
-        else:
-            for source_type, source_data in sources_queued:
-                if source_type == "pdf":
-                    with strl.spinner(f"[*] Extracting text from {source_data.name}..."):
-                        try:
-                            # Extract text from uploaded PDF memory stream
-                            reader = PdfReader(source_data)
-                            extracted_text = []
-                            for page in reader.pages:
-                                text = page.extract_text()
-                                if text:
-                                    extracted_text.append(text)
-
-                            full_raw_text = "\n".join(extracted_text)
-
-                            if not full_raw_text.strip():
-                                strl.error(f"Extraction error for {source_data.name}: File contains zero token sequences or is an un-OCRed image scan.")
-                            else:
-                                payload = {"filename": source_data.name, "text_content": full_raw_text}
-                                response = requests.post(f"{BACKEND_API}/ingest", json=payload)
-                                if response.status_code == 200:
-                                    data = response.json()
-                                    strl.success(f"[+] PDF '{source_data.name}' ingested. Wrote {data['chunks_ingested']} context blocks to pgvector.")
-                                else:
-                                    strl.error(f"API rejection error for PDF: {response.text}")
-                        except Exception as e:
-                            strl.error(f"PDF pipeline failure: {str(e)}")
-
-                elif source_type == "text":
-                    label, raw_text = source_data
-                    with strl.spinner(f"[*] Ingesting text block '{label}'..."):
-                        try:
-                            payload = {"filename": label, "text_content": raw_text}
-                            response = requests.post(f"{BACKEND_API}/ingest", json=payload)
-                            if response.status_code == 200:
-                                data = response.json()
-                                strl.success(f"[+] Text '{label}' ingested. Wrote {data['chunks_ingested']} context blocks to pgvector.")
-                            else:
-                                strl.error(f"API rejection error for text: {response.text}")
-                        except Exception as e:
-                            strl.error(f"Text pipeline failure: {str(e)}")
-
-# --- MODE 2: CONVERSATIONAL CHAT APPLICATION ---
-elif app_mode == "Conversational Chat Pipeline":
-    strl.title("💬 Context-Isolated RAG Chat Terminal")
-    strl.write("Query the local vector cluster space. The response generation is locked strictly to ingested document records.")
-
-    # Initialize local streamlit chat state log array if missing
-    if "chat_history" not in strl.session_state:
-        strl.session_state.chat_history = []
-
-    # Display active historical chat frames
-    for message in strl.session_state.chat_history:
-        with strl.chat_message(message["role"]):
-            strl.markdown(message["content"])
-
-    # Intercept user interaction prompt
-    if user_prompt := strl.chat_input("Ask a question based on database records..."):
-        # Append and display user input instant frame
-        strl.session_state.chat_history.append({"role": "user", "content": user_prompt})
-        with strl.chat_message("user"):
-            strl.markdown(user_prompt)
-            
-        # Dispatch query matrix coordinates to the API engine
-        with strl.chat_message("assistant"):
-            response_box = strl.empty()
-            with strl.spinner("[*] Executing spatial distance lookup vs. pgvector..."):
+with col2:
+    st.header("🔍 Conversational Query Workspace")
+    st.subheader("Scenario Matrix Constraint Extraction")
+    
+    query_prompt = st.text_input(
+        "Search Query:",
+        placeholder="e.g., Find oncoming vehicles under occlusion closer than 15 meters"
+    )
+    
+    if st.button("⚡ Run Spatial Search Strategy"):
+        if query_prompt:
+            with st.spinner("Computing query embeddings and scanning cosine distance matrices..."):
                 try:
-                    res = requests.post(f"{BACKEND_API}/query", json={"prompt": user_prompt})
-                    if res.status_code == 200:
-                        model_output = res.json()["answer"]
-                        response_box.markdown(model_output)
-                        # Append assistant thread payload back to history state
-                        strl.session_state.chat_history.append({"role": "assistant", "content": model_output})
+                    response = requests.post(f"{API_BASE}/query/scenario", json={"prompt": query_prompt})
+                    
+                    if response.status_code == 200:
+                        answer = response.json().get("answer", "No response content returned.")
+                        st.subheader("🤖 Synthesized Engineering Output:")
+                        st.markdown(answer)
                     else:
-                        response_box.markdown(f"Error executing API fetch pass: {res.text}")
+                        st.error(f"Backend Query Processing Exception: {response.text}")
                 except Exception as e:
-                    response_box.markdown(f"API connection failure: {str(e)}")
+                    st.error(f"Failed to communicate with API server: {e}")
+        else:
+            st.warning("Please specify a constraint scenario query sequence first.")

@@ -12,10 +12,11 @@ import ollama
 
 app = FastAPI(title="Spatial Telemetry Engine", description="Local 3D Scene Discovery & Volumetric Retrieval Platform")
 
+# Configured to target your newly initialized PostgreSQL layer
 DB_PARAMS = {
-    "dbname": "aarav_vector_db",
+    "dbname": "spatial_vector_db",
     "user": "postgres",
-    "password": "",  
+    "password": "",
     "host": "localhost",
     "port": "5432"
 }
@@ -59,7 +60,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     conn.commit()
-    
+
     # Mutate table schema to explicitly hold structural physical states
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS spatial_scene_store (
@@ -77,20 +78,20 @@ def init_db():
 
 init_db()
 
-# --- Pydantic Validation Models for Structural Telemetry Ingestion ---
+# --- Pydantic Validation Models for Structural Telemetry Ingestion (V2 Standards Complete) ---
 
 class BoundingBox3D(BaseModel):
     target_id: int
     classification: str
-    center_xyz: List[float] = Field(..., min_items=3, max_items=3)  # [X, Y, Z] relative coordinates
-    extent_lwh: List[float] = Field(..., min_items=3, max_items=3)  # [Length, Width, Height]
-    velocity_vector: List[float] = Field(..., min_items=3, max_items=3) # [Vx, Vy, Vz]
+    center_xyz: List[float] = Field(..., min_length=3, max_length=3)  # [X, Y, Z] relative coordinates
+    extent_lwh: List[float] = Field(..., min_length=3, max_length=3)  # [Length, Width, Height]
+    velocity_vector: List[float] = Field(..., min_length=3, max_length=3) # [Vx, Vy, Vz]
     occlusion_state: str # e.g., "none", "partial_500ms", "total"
 
 class SpatialFramePayload(BaseModel):
     scene_id: str
     frame_timestamp: float
-    ego_velocity_vector: List[float] = Field(..., min_items=3, max_items=3) # [Vx, Vy, Vz]
+    ego_velocity_vector: List[float] = Field(..., min_length=3, max_length=3) # [Vx, Vy, Vz]
     camera_extrinsics_rt: List[List[float]] # 3x4 or 4x4 matrix transformation rows
     detected_objects: List[BoundingBox3D]
 
@@ -101,17 +102,17 @@ class QueryPayload(BaseModel):
 
 def serialize_spatial_frame(payload: SpatialFramePayload) -> str:
     """
-    Converts multi-dimensional matrix inputs and coordinate tracking telemetry 
+    Converts multi-dimensional matrix inputs and coordinate tracking telemetry
     into a dense structural string representation for the embedding layer.
     """
     ego_speed = (sum(v**2 for v in payload.ego_velocity_vector))**0.5
-    
+
     # Base structural metadata anchor
     structural_string = (
-        f"Sequence frame token: {payload.scene_id}. Timestamp offsets: {payload.frame_timestamp:.3f}s. "
+        f"Sequence frame token: {payload.scene_id}. Physical Timestamp offsets: {payload.frame_timestamp:.3f}s. "
         f"Ego vehicle linear velocity state magnitude: {ego_speed:.2f} m/s. "
     )
-    
+
     # Serialize target bounding box trajectories relative to ego origin
     for idx, box in enumerate(payload.detected_objects):
         distance_euclidean = (sum(c**2 for c in box.center_xyz))**0.5
@@ -123,7 +124,7 @@ def serialize_spatial_frame(payload: SpatialFramePayload) -> str:
             f"Trajectory velocity component vectors Vx:{box.velocity_vector[0]:.2f} Vy:{box.velocity_vector[1]:.2f}. "
             f"Occlusion status flag: {box.occlusion_state}. "
         )
-        
+
     return structural_string
 
 # --- REST Endpoints ---
@@ -140,20 +141,20 @@ async def ingest_spatial_telemetry(payload: SpatialFramePayload):
 
         conn = psycopg2.connect(**DB_PARAMS)
         cursor = conn.cursor()
-        register_vector(conn)  
+        register_vector(conn)
 
         # Store explicit spatial variables alongside raw structural jsonb tracking logs
         cursor.execute(
             """
-            INSERT INTO spatial_scene_store 
-            (scene_id, frame_timestamp, ego_velocity_vector, raw_telemetry_json, spatial_geometry_embedding) 
+            INSERT INTO spatial_scene_store
+            (scene_id, frame_timestamp, ego_velocity_vector, raw_telemetry_json, spatial_geometry_embedding)
             VALUES (%s, %s, %s, %s, %s);
             """,
             (
-                payload.scene_id, 
-                payload.frame_timestamp, 
-                payload.ego_velocity_vector, 
-                json.dumps(payload.dict()), 
+                payload.scene_id,
+                payload.frame_timestamp,
+                payload.ego_velocity_vector,
+                json.dumps(payload.dict()),
                 spatial_vector
             )
         )
@@ -161,10 +162,10 @@ async def ingest_spatial_telemetry(payload: SpatialFramePayload):
         conn.commit()
         cursor.close()
         conn.close()
-        
+
         print(f"[+] Successfully indexed tracking metrics for sequence frame: {payload.scene_id}")
         return {"status": "success", "scene_indexed": payload.scene_id, "frame_timestamp": payload.frame_timestamp}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -177,14 +178,14 @@ async def query_scenario_pipeline(payload: QueryPayload):
 
         conn = psycopg2.connect(**DB_PARAMS)
         cursor = conn.cursor()
-        register_vector(conn)  
+        register_vector(conn)
 
         # Query the database for the 3 closest spatial layouts using cosine distance
         cursor.execute(
             """
-            SELECT scene_id, frame_timestamp, raw_telemetry_json 
-            FROM spatial_scene_store 
-            ORDER BY spatial_geometry_embedding <=> %s::vector 
+            SELECT scene_id, frame_timestamp, raw_telemetry_json
+            FROM spatial_scene_store
+            ORDER BY spatial_geometry_embedding <=> %s::vector
             LIMIT 3;
             """,
             (query_vector,)
@@ -196,19 +197,44 @@ async def query_scenario_pipeline(payload: QueryPayload):
         if not records:
             return {"answer": "No indexed scene matrices discovered in spatial database layers."}
 
-        # Build context payloads with clean JSON blocks to allow llama to parse numeric states easily
+        # Build context payloads by isolating individual target properties into an explicit schema map
         context_blocks = []
         for row in records:
-            block = f"Scene ID Reference: {row[0]} | Offset Timestamp: {row[1]}s\nRaw Target States: {json.dumps(row[2], indent=2)}"
+            scene_id = row[0]
+            timestamp = row[1]
+            raw_json = row[2]
+
+            objects_summary = ""
+            for obj in raw_json.get("detected_objects", []):
+                objects_summary += (
+                    f"- TARGET ID {obj['target_id']} Class: [{obj['classification'].upper()}]\n"
+                    f"  Position [X,Y,Z]: {obj['center_xyz']}\n"
+                    f"  Size [L,W,H]: {obj['extent_lwh']}\n"
+                    f"  Velocity [Vx,Vy,Vz]: {obj['velocity_vector']}\n"
+                    f"  Visibility State: {obj['occlusion_state']}\n"
+                )
+
+            block = (
+                f"DATA SOURCE NODE: {scene_id} at {timestamp:.2f}s\n"
+                f"OBJECT LOGS:\n{objects_summary}"
+            )
             context_blocks.append(block)
-            
+
         context_payload = "\n---\n".join(context_blocks)
 
+        # Rigidly lock down the small LLM's role to prevent semantic merging and field re-writing
         system_instructions = (
-            "You are an advanced Spatial Systems Engineering Assistant specializing in computer vision tracking telemetry. "
-            "Your objective is to analyze the retrieved time-series driving frames and map explicit boundary configurations to answer the query.\n"
-            "Format your response cleanly. If the user request implies initializing a tracking model, output the recommended 4D State Vector "
-            "parameters initialization block in the format: x = [X, Y, Vx, Vy]^T using standard Markdown notation.\n\n"
+            "You are a deterministic Autonomous Vehicle Data Extraction Component. You do not reason or theorize, "
+            "you do not correct source classifications, and you never guess properties.\n\n"
+            "CRITICAL COMMANDS:\n"
+            "1. Output ONLY exact parameters directly printed in the OBJECT LOGS context. If a target is logged as a motorcycle, "
+            "write its classification explicitly as motorcycle. NEVER alter it or label it as a pedestrian.\n"
+            "2. Keep numeric values completely intact. If velocities are logged as meters per second, output them in m/s, never mph.\n"
+            "3. Do not cross-contaminate properties. Keep every target ID perfectly mapped to its own structural location vectors.\n"
+            "4. For the single closest object matching the user query prompt constraints, output its tracking parameter block using "
+            "this exact markdown notation:\n"
+            "$$x = [X, Y, V_x, V_y]^T$$\n"
+            "followed by the exact numbers from that specific target's log file entry lines.\n\n"
             f"=== RETRIEVED TELEMETRY CONTEXT BANDS ===\n{context_payload}\n========================================="
         )
 
@@ -221,7 +247,7 @@ async def query_scenario_pipeline(payload: QueryPayload):
         )
 
         return {"answer": chat_res['message']['content']}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

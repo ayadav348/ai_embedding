@@ -6,3 +6,10 @@ ollama>=0.4.0
 pypdf>=5.0.0
 streamlit>=1.40.0
 requests>=2.32.0
+
+# --- Mandatory Ingestion & Verification Layers ---
+pydantic>=2.7.0         # Crucial: Enforces your BoundingBox3D & SpatialFramePayload schemas
+pydantic-settings>=2.2.0 # Manages your local DB_PARAMS and EMBED_MODEL configurations smoothly
+
+# --- Data Serialization Optimization ---
+numpy>=1.26.0           # Optimizes multi-dimensional array slicing if you import heavy datasets later
